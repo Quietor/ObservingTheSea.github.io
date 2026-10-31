@@ -5,10 +5,48 @@ on:
   workflow_dispatch:          # 也允许手动触发
 permissions:
   contents: write
+env:
+  GIT_LFS_SKIP_SMUDGE: "1"   # runner 不需要 LFS 资源包本体(GitLab 线上的资源由备份体系管理,代码同步无需下载)
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - run: gh repo sync ${{ github.repository }} -b main
+      # ── 第 1 步:从上游原仓库同步代码到本 fork ──────────────────────────
+      - name: 从上游同步 fork
+        run: gh repo sync ${{ github.repository }} -b main
         env:
           GH_TOKEN: ${{ github.token }}
+
+      # ── 第 2 步:检出 fork main(此时已是最新同步结果)──────────────────
+      - name: Checkout fork main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── 第 3 步:把同步后的代码推送到学校 GitLab ──────────────────────
+      # 合并感知、非破坏性:
+      #   - 从 GitLab main 建临时分支,把 fork main 合并进去再推回——
+      #     GitLab 线上的资源提交(assets/)与文档提交完整保留,绝不全量覆盖
+      #   - 上游无更新时自动空跑;出现合并冲突则中止并报错,等人工处理
+      # 凭证:仓库 Secret「GITLAB_TOKEN」= 学校 GitLab 的 Project Access
+      # Token(write_repository 权限)
+      - name: 推送到 GitLab(合并感知,非破坏性)
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -z "$GITLAB_TOKEN" ]; then
+            echo "::error::未配置 GITLAB_TOKEN secret(学校 GitLab Project Access Token,write_repository 权限)"
+            exit 1
+          fi
+          git remote add gitlab "https://oauth2:${GITLAB_TOKEN}@gitlab.uni-oldenburg.de/buwa1196/china-study-free-private.git"
+          git fetch gitlab main
+          git checkout -B gitlab-sync gitlab/main
+          if git merge-base --is-ancestor main gitlab/main; then
+            echo "GitLab main 已包含最新代码,无变化"
+          else
+            git merge main --no-edit \
+              || { echo "::error::合并冲突,需人工处理(备份线不受影响)"; git merge --abort 2>/dev/null || true; exit 1; }
+            git push gitlab gitlab-sync:main
+          fi

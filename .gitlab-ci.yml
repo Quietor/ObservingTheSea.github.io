@@ -1,0 +1,103 @@
+# ============================================================================
+# .gitlab-ci.yml —— 网站构建流水线(逻辑移植自 GitHub 的 deploy-pages.yml)
+#
+# 【触发】fork 的同步 action 每次把代码推到本仓库时自动运行;
+#   也可在 CI/CD → Schedules 配置定时,或手动 Run pipeline。
+# 【做什么】
+#   ① 从自托管 GitHub Release(Quietor/china-study-free-private,
+#      tag v1.1.0-assets)拉三份资源包并解压;
+#   ② npm 构建纯静态网站(Next.js 导出);
+#   ③ 裁剪未被页面引用的音频(870MB → 实际用到的部分);
+#   ④ 完整网站作为 Artifact 存档,网页上随时可下载。
+#
+# 【凭证】CI/CD → Variables 里配置 GITHUB_TOKEN:
+#   能读取私有 Release 的 GitHub token(只读即可,建议 fine-grained)。
+#
+# 【产物保留期】下方 artifacts.expire_in 即保留时长,直接改这一行:
+#   支持 "90 days" / "30 days" / "1 week" / "4 hours" 等写法;
+#   最近的成功构建默认始终保留(GitLab 项目级设置可调)。
+#
+# 【与 deploy-pages.yml 的关系】同一构建逻辑的 GitLab 版;未来构建逻辑
+#   变更应抽到共享脚本(方案 C 的 build-site.sh),两个平台薄壳调用。
+# ============================================================================
+
+image: node:22-alpine
+
+stages:
+  - build
+
+build-site:
+  stage: build
+  variables:
+    NODE_OPTIONS: "--max-old-space-size=4096"
+  script:
+    # alpine 镜像补齐 python3 与 curl(deploy-pages.yml 的 ubuntu 自带)
+    - apk add --no-cache python3 curl
+    # ① 从自托管私有 Release 下载资源(API octet-stream + token)
+    - RELEASE_API="https://api.github.com/repos/Quietor/china-study-free-private/releases/tags/v1.1.0-assets"
+    - |
+      dl() {
+        id=$(curl -s --retry 3 -H "Authorization: Bearer $GITHUB_TOKEN" "$RELEASE_API" \
+          | python3 -c 'import json,sys; print(next(a["id"] for a in json.load(sys.stdin)["assets"] if a["name"]==sys.argv[1]))' "$1")
+        curl -sL --retry 3 -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/octet-stream" -o "/tmp/$1" "https://api.github.com/repos/Quietor/china-study-free-private/releases/assets/$id"
+      }
+    - dl data-source.zip
+    - dl data.zip
+    - dl audio.tar.gz
+    # ② 解压(data-source → data/,data → public/data/,audio → public/audio/)
+    - |
+      python3 - <<'PY'
+      import zipfile, tarfile
+      for src, dst in [("/tmp/data-source.zip", "data"), ("/tmp/data.zip", "apps/web/public/data")]:
+          with zipfile.ZipFile(src) as z:
+              for info in z.infolist():
+                  info.filename = info.filename.replace("\\", "/")
+                  z.extract(info, dst)
+          print("extracted:", src, "->", dst)
+      with tarfile.open("/tmp/audio.tar.gz") as t:
+          try:
+              t.extractall("apps/web/public", filter="data")
+          except TypeError:
+              t.extractall("apps/web/public")
+      print("extracted: audio -> apps/web/public/audio")
+      PY
+    # ③ 构建静态网站
+    - cd apps/web
+    - npm ci --no-audit --no-fund
+    - npm run build
+    # ④ 裁剪未被引用的音频
+    - |
+      python3 - <<'PY'
+      import os, re
+      out = "out"
+      audio_re = re.compile(r'/audio/([0-9a-f]{2})/([0-9a-f]+\.opus)')
+      refs = set()
+      for root, dirs, files in os.walk(os.path.join(out, "data")):
+          for f in files:
+              if not f.endswith(".json"):
+                  continue
+              t = open(os.path.join(root, f), encoding="utf-8", errors="ignore").read()
+              for a, b in audio_re.findall(t):
+                  refs.add(a + "/" + b)
+      print("referenced audio files:", len(refs))
+      audio_root = os.path.join(out, "audio")
+      removed = kept = 0
+      for b in os.listdir(audio_root):
+          bd = os.path.join(audio_root, b)
+          if not os.path.isdir(bd):
+              continue
+          for fn in os.listdir(bd):
+              if (b + "/" + fn) in refs:
+                  kept += 1
+              else:
+                  os.remove(os.path.join(bd, fn))
+                  removed += 1
+      print(f"kept: {kept}, removed: {removed}")
+      PY
+  # ⑤ 完整网站作为 Artifact 存档
+  #    ★ 保留时长改下面这一行 expire_in(如 "30 days"、"1 week"、"4 hours")
+  artifacts:
+    name: "site-$CI_COMMIT_REF_NAME-$CI_COMMIT_SHORT_SHA"
+    paths:
+      - apps/web/out/
+    expire_in: 90 days

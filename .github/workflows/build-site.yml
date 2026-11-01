@@ -1,0 +1,103 @@
+# ============================================================================
+# Build site —— 网站构建与产物存档
+#
+# 【触发】每次 push 到 main(即同步 action 从上游原仓库拉取更新后)自动运行。
+# 【做什么】从原作者项目的公共 Release(wuwangzhang1216/ChinaTextbookStudyFree,
+#   tag v1.1.0-assets,匿名可读)下载资源包,与本仓库代码组装成完整静态网站,
+#   裁剪未被引用的音频,网站整体作为 Artifact 存档——
+#   在本 workflow 的运行页面可随时下载。
+# 【产物保留期】下方 retention-days: 90(单位:天),按需修改。
+# 【与其他部分的关系】本 workflow 只构建存档,不做 Pages 发布;
+#   资源来源为原作者公共 Release(匿名读取,无需任何凭证)。
+# ============================================================================
+
+name: Build site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Fetch resources from original public Release
+        run: |
+          BASE="https://github.com/wuwangzhang1216/ChinaTextbookStudyFree/releases/download/v1.1.0-assets"
+          curl -L --retry 3 -o /tmp/data-source.zip "$BASE/data-source.zip"
+          curl -L --retry 3 -o /tmp/data.zip "$BASE/data.zip"
+          curl -L --retry 3 -o /tmp/audio.tar.gz "$BASE/audio.tar.gz"
+
+      - name: Extract resources
+        run: |
+          python3 - <<'PY'
+          import zipfile, tarfile
+          for src, dst in [("/tmp/data-source.zip", "data"), ("/tmp/data.zip", "apps/web/public/data")]:
+              with zipfile.ZipFile(src) as z:
+                  for info in z.infolist():
+                      info.filename = info.filename.replace("\\", "/")
+                      z.extract(info, dst)
+              print("extracted:", src, "->", dst)
+          with tarfile.open("/tmp/audio.tar.gz") as t:
+              try:
+                  t.extractall("apps/web/public", filter="data")
+              except TypeError:
+                  t.extractall("apps/web/public")
+          print("extracted: audio -> apps/web/public/audio")
+          PY
+
+      - name: Install dependencies
+        run: cd apps/web && npm ci --no-audit --no-fund
+
+      - name: Build static site
+        run: cd apps/web && npm run build
+        env:
+          NODE_OPTIONS: "--max-old-space-size=4096"
+
+      - name: Prune unused audio (keep only referenced)
+        run: |
+          cd apps/web
+          python3 - <<'PY'
+          import os, re
+          out = "out"
+          audio_re = re.compile(r'/audio/([0-9a-f]{2})/([0-9a-f]+\.opus)')
+          refs = set()
+          for root, dirs, files in os.walk(os.path.join(out, "data")):
+              for f in files:
+                  if not f.endswith(".json"):
+                      continue
+                  t = open(os.path.join(root, f), encoding="utf-8", errors="ignore").read()
+                  for a, b in audio_re.findall(t):
+                      refs.add(a + "/" + b)
+          print("referenced audio files:", len(refs))
+          audio_root = os.path.join(out, "audio")
+          removed = kept = 0
+          for b in os.listdir(audio_root):
+              bd = os.path.join(audio_root, b)
+              if not os.path.isdir(bd):
+                  continue
+              for fn in os.listdir(bd):
+                  if (b + "/" + fn) in refs:
+                      kept += 1
+                  else:
+                      os.remove(os.path.join(bd, fn))
+                      removed += 1
+          print(f"kept: {kept}, removed: {removed}")
+          PY
+
+      - name: Upload site artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-${{ github.sha }}
+          path: apps/web/out/
+          retention-days: 90

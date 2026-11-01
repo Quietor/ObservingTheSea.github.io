@@ -40,7 +40,7 @@ jobs:
             echo "::error::未配置 GITLAB_TOKEN secret(学校 GitLab Project Access Token,write_repository 权限)"
             exit 1
           fi
-          git remote add gitlab "https://oauth2:${GITLAB_TOKEN}@gitlab.uni-oldenburg.de/buwa1196/china-study-free-private.git"
+          git remote add gitlab "https://oauth2:${GITLAB_TOKEN}@gitlab.uni-oldenburg.de/buwa1196/observingthesea.github.io.sync.git"
           git fetch gitlab main
           git checkout -B gitlab-sync gitlab/main
           if git merge-base --is-ancestor main gitlab/main; then

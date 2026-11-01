@@ -95,9 +95,12 @@ jobs:
           print(f"kept: {kept}, removed: {removed}")
           PY
 
+      - name: 生成构建日期戳(北京时间)
+        run: echo "BUILD_DATE=$(TZ=Asia/Shanghai date +%Y%m%d-%H%M)" >> "$GITHUB_ENV"
+
       - name: Upload site artifact
         uses: actions/upload-artifact@v4
         with:
-          name: site-${{ github.sha }}
+          name: site-${{ env.BUILD_DATE }}-${{ github.sha }}
           path: apps/web/out/
           retention-days: 90

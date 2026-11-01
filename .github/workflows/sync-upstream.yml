@@ -32,7 +32,7 @@ jobs:
       # Token(write_repository 权限)
       - name: 推送到 GitLab(合并感知,非破坏性)
         env:
-          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          GITLAB_TOKEN: ${{ secrets.SECRETE_SYNC_FROM_GITHUB_TO_GITLAB }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
